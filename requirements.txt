@@ -2,3 +2,6 @@ django-crontab
 django-filter
 graphene-django
 gql[requests]
+celery
+django-celery-beat
+redis
