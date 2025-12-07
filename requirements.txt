@@ -5,3 +5,4 @@ gql[requests]
 celery
 django-celery-beat
 redis
+requests
