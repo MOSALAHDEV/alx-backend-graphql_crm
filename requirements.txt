@@ -1,3 +1,4 @@
 django-crontab
 django-filter
 graphene-django
+gql[requests]
