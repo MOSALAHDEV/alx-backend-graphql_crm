@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
 
     # Third-party apps
+    "django_crontab",
     "graphene_django",
     "django_filters",
 
@@ -105,3 +106,7 @@ GRAPHENE = {
     "SCHEMA": "graphql_crm.schema.schema",
 }
 
+
+CRONJOBS = [
+    ('*/5 * * * *', 'crm.cron.log_crm_heartbeat'),
+]
