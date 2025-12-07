@@ -31,7 +31,7 @@ class ProductNode(DjangoObjectType):
 
 
 class OrderNode(DjangoObjectType):
-    # Optional convenience: allow querying `product { ... }` (first product)
+    # Convenience: allow querying `product { ... }` (first product)
     product = graphene.Field(ProductNode)
 
     class Meta:
@@ -44,7 +44,7 @@ class OrderNode(DjangoObjectType):
 
 
 # -------------------------
-# Simple types for mutation returns (keeps previous tasks happy)
+# Simple types for mutation returns
 # -------------------------
 class CustomerType(DjangoObjectType):
     class Meta:
@@ -70,7 +70,7 @@ class OrderType(DjangoObjectType):
 
 
 # -------------------------
-# Query (Task 3)
+# Query (Task 3 filtering)
 # -------------------------
 class Query(graphene.ObjectType):
     hello = graphene.String(default_value="Hello, GraphQL!")
@@ -160,7 +160,7 @@ def to_decimal(value) -> Decimal:
 
 
 # -------------------------
-# Mutations (kept for Task 2)
+# Mutations (Task 2 + Task 3)
 # -------------------------
 class CreateCustomer(graphene.Mutation):
     class Arguments:
@@ -273,8 +273,27 @@ class CreateOrder(graphene.Mutation):
         return CreateOrder(order=order)
 
 
+class UpdateLowStockProducts(graphene.Mutation):
+    products = graphene.List(ProductType)
+    message = graphene.String()
+
+    @staticmethod
+    def mutate(root, info):
+        updated = []
+        low_qs = Product.objects.filter(stock__lt=10)
+
+        with transaction.atomic():
+            for p in low_qs:
+                p.stock = int(p.stock) + 10
+                p.save()
+                updated.append(p)
+
+        return UpdateLowStockProducts(products=updated, message="Low stock products updated successfully.")
+
+
 class Mutation(graphene.ObjectType):
     create_customer = CreateCustomer.Field()
     bulk_create_customers = BulkCreateCustomers.Field()
     create_product = CreateProduct.Field()
     create_order = CreateOrder.Field()
+    update_low_stock_products = UpdateLowStockProducts.Field()

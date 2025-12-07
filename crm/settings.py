@@ -6,4 +6,5 @@ if "django_crontab" not in INSTALLED_APPS:
 
 CRONJOBS = [
     ('*/5 * * * *', 'crm.cron.log_crm_heartbeat'),
+    ('0 */12 * * *', 'crm.cron.update_low_stock'),
 ]
