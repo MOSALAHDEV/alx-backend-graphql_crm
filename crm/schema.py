@@ -2,7 +2,7 @@ import re
 from decimal import Decimal
 
 import graphene
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from graphene_django import DjangoObjectType
 from graphql import GraphQLError
@@ -37,19 +37,6 @@ class OrderType(DjangoObjectType):
 class Query(graphene.ObjectType):
     hello = graphene.String(default_value="Hello, GraphQL!")
 
-    customers = graphene.List(CustomerType)
-    products = graphene.List(ProductType)
-    orders = graphene.List(OrderType)
-
-    def resolve_customers(root, info):
-        return Customer.objects.all()
-
-    def resolve_products(root, info):
-        return Product.objects.all()
-
-    def resolve_orders(root, info):
-        return Order.objects.select_related("customer").prefetch_related("products").all()
-
 
 # -------------------------
 # Inputs
@@ -80,15 +67,24 @@ PHONE_PATTERNS = (
     re.compile(r"^\d{3}-\d{3}-\d{4}$"),    # 123-456-7890
 )
 
-def validate_phone(phone: str) -> None:
-    if phone is None or phone == "":
+
+def validate_phone(phone: str | None) -> None:
+    if not phone:
         return
     if not any(p.match(phone) for p in PHONE_PATTERNS):
         raise GraphQLError("Invalid phone format. Use +1234567890 or 123-456-7890.")
 
+
 def validate_unique_email(email: str) -> None:
     if Customer.objects.filter(email=email).exists():
         raise GraphQLError("Email already exists.")
+
+
+def to_decimal(value) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        raise GraphQLError("Invalid decimal value.")
 
 
 # -------------------------
@@ -102,7 +98,7 @@ class CreateCustomer(graphene.Mutation):
     message = graphene.String()
 
     @staticmethod
-    def mutate(root, info, input: CustomerInput):
+    def mutate(root, info, input):
         name = input.get("name")
         email = input.get("email")
         phone = input.get("phone")
@@ -126,21 +122,29 @@ class BulkCreateCustomers(graphene.Mutation):
         created = []
         errors = []
 
-        # Partial success: each record uses its own transaction
-        for idx, c in enumerate(input):
-            name = c.get("name")
-            email = c.get("email")
-            phone = c.get("phone")
+        # One outer transaction, but per-record savepoints allow partial success.
+        with transaction.atomic():
+            for idx, c in enumerate(input):
+                name = c.get("name")
+                email = c.get("email")
+                phone = c.get("phone")
 
-            try:
-                validate_unique_email(email)
-                validate_phone(phone)
+                try:
+                    validate_phone(phone)
+                    validate_unique_email(email)
 
-                with transaction.atomic():
-                    customer = Customer.objects.create(name=name, email=email, phone=phone)
-                    created.append(customer)
-            except Exception as e:
-                errors.append(f"Record {idx}: {str(e)}")
+                    # savepoint for this record
+                    with transaction.atomic():
+                        customer = Customer.objects.create(name=name, email=email, phone=phone)
+                        created.append(customer)
+
+                except GraphQLError as e:
+                    errors.append(f"Record {idx}: {e.message}")
+                except IntegrityError:
+                    # in case of race condition/unique constraint
+                    errors.append(f"Record {idx}: Email already exists.")
+                except Exception as e:
+                    errors.append(f"Record {idx}: {str(e)}")
 
         return BulkCreateCustomers(customers=created, errors=errors)
 
@@ -152,27 +156,19 @@ class CreateProduct(graphene.Mutation):
     product = graphene.Field(ProductType)
 
     @staticmethod
-    def mutate(root, info, input: ProductInput):
+    def mutate(root, info, input):
         name = input.get("name")
-        price = input.get("price")
+        price = to_decimal(input.get("price"))
         stock = input.get("stock", 0)
 
-        # Validate
-        if price is None:
-            raise GraphQLError("Price is required.")
-        try:
-            price_dec = Decimal(str(price))
-        except Exception:
-            raise GraphQLError("Invalid price value.")
-
-        if price_dec <= 0:
+        if price <= 0:
             raise GraphQLError("Price must be positive.")
         if stock is None:
             stock = 0
         if int(stock) < 0:
             raise GraphQLError("Stock must be non-negative.")
 
-        product = Product.objects.create(name=name, price=price_dec, stock=int(stock))
+        product = Product.objects.create(name=name, price=price, stock=int(stock))
         return CreateProduct(product=product)
 
 
@@ -183,7 +179,7 @@ class CreateOrder(graphene.Mutation):
     order = graphene.Field(OrderType)
 
     @staticmethod
-    def mutate(root, info, input: OrderInput):
+    def mutate(root, info, input):
         customer_id = input.get("customer_id")
         product_ids = input.get("product_ids") or []
         order_date = input.get("order_date") or timezone.now()
@@ -198,12 +194,17 @@ class CreateOrder(graphene.Mutation):
 
         products = list(Product.objects.filter(pk__in=product_ids))
         if len(products) != len(set(product_ids)):
-            raise GraphQLError("Invalid product ID in productIds.")
+            raise GraphQLError("Invalid product ID.")
 
+        # Accurate total: sum current product prices
         total = sum((p.price for p in products), Decimal("0.00"))
 
         with transaction.atomic():
-            order = Order.objects.create(customer=customer, total_amount=total, order_date=order_date)
+            order = Order.objects.create(
+                customer=customer,
+                total_amount=total,
+                order_date=order_date,
+            )
             order.products.set(products)
 
         return CreateOrder(order=order)
